@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sketch to Image</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f4f6; color: #222; }
+  header { padding: 16px 24px; background: #222; color: #fff; display: flex; gap: 16px;
+           align-items: center; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 20px; }
+  header input { flex: 1; min-width: 260px; padding: 8px; border-radius: 6px; border: none; font-size: 14px; }
+  header button { padding: 8px 14px; border-radius: 6px; border: none; cursor: pointer; }
+  #conn { font-size: 13px; }
+  main { max-width: 1200px; margin: 20px auto; padding: 0 16px;
+         display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  h2 { margin: 0 0 12px; font-size: 16px; }
+  canvas { width: 100%; max-width: 512px; aspect-ratio: 1; border: 1px solid #ccc;
+           border-radius: 6px; touch-action: none; cursor: crosshair; background: #fff; display: block; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
+  .card button, .btn { padding: 8px 14px; border: 1px solid #bbb; border-radius: 6px; background: #fafafa;
+                 cursor: pointer; font-size: 14px; }
+  .card button:hover, .btn:hover { background: #eee; }
+  button.primary { background: #2563eb !important; color: #fff; border-color: #2563eb !important;
+                   font-size: 16px; padding: 10px 20px; }
+  button.primary:disabled { background: #93a8d6 !important; cursor: wait; }
+  button.active { background: #222 !important; color: #fff; }
+  textarea, input[type=number] { width: 100%; padding: 8px; border: 1px solid #bbb;
+           border-radius: 6px; font-family: inherit; font-size: 14px; }
+  label { font-size: 13px; display: block; margin-top: 8px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .imgs { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  .imgs img { width: 100%; border-radius: 6px; border: 1px solid #ddd; }
+  .imgs small { color: #666; }
+  #status { margin-top: 8px; font-size: 14px; color: #555; min-height: 20px; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sketch to Image</h1>
+  <input type="text" id="apiUrl" placeholder="API URL, e.g. https://xxxx.ngrok-free.app">
+  <button id="testBtn">Test connection</button>
+  <span id="conn"></span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. Sketch</h2>
+    <canvas id="canvas" width="512" height="512"></canvas>
+
+    <div class="row">
+      <button id="penBtn" class="active">Pen</button>
+      <button id="eraserBtn">Eraser</button>
+      <label style="margin:0">Size <input type="range" id="size" min="1" max="30" value="4"></label>
+      <button id="clearBtn">Clear</button>
+      <label class="btn" for="file" style="margin:0">Upload image</label>
+      <input type="file" id="file" accept="image/*">
+    </div>
+
+    <label style="margin-top:4px">
+      <input type="checkbox" id="useDetector">
+      Extract lineart first (for uploaded photos )
+    </label>
+
+    <h2 style="margin-top:20px">2. Prompt</h2>
+    <label>Prompt</label>
+    <textarea id="prompt" rows="3">A realistic image of a cottage house, a pathway with wooden ramps and trees</textarea>
+    <label>Negative prompt</label>
+    <textarea id="negative" rows="2">painting, drawing, sketch, illustration, cartoon, anime, blurry</textarea>
+
+    <div class="grid2">
+      <label>Control strength <span id="csv">1.0</span>
+        <input type="range" id="control" min="0" max="2" step="0.05" value="1.0"></label>
+      <label>Guidance scale <span id="gsv">9.5</span>
+        <input type="range" id="guidance" min="1" max="20" step="0.5" value="9.5"></label>
+      <label>Steps <span id="stv">30</span>
+        <input type="range" id="steps" min="10" max="60" step="1" value="30"></label>
+      <label>Seed (-1 = random)
+        <input type="number" id="seed" value="42"></label>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <button id="genBtn" class="primary">Generate</button>
+    </div>
+    <div id="status"></div>
+  </section>
+
+  <section class="card">
+    <h2>3. Result</h2>
+    <div class="imgs">
+      <div><img id="result" alt=""><small id="resultLabel"></small></div>
+      <div><img id="control_img" alt=""><small id="controlLabel"></small></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const sizeInput = document.getElementById("size");
+const useDetector = document.getElementById("useDetector");
+const apiUrlInput = document.getElementById("apiUrl");
+let tool = "pen", drawing = false, last = null;
+
+// ---- API URL: try each candidate, use the first one that answers ----
+const API_CANDIDATES = [
+  "http://127.0.0.1:5000",                 // local
+  "https://silk-evacuee-mammogram.ngrok-free.dev"            // Kaggle/ngrok (update each session)
+];
+apiUrlInput.value = API_CANDIDATES[0];
+
+function apiBase() {
+  return apiUrlInput.value.trim().replace(/\/+$/, "");
+}
+
+async function findApi() {
+  const conn = document.getElementById("conn");
+  conn.textContent = "Looking for the API...";
+  for (const url of API_CANDIDATES) {
+    try {
+      const r = await fetch(url + "/health", {
+        headers: { "ngrok-skip-browser-warning": "1" },
+        signal: AbortSignal.timeout(3000)
+      });
+      const d = await r.json();
+      if (d.status === "ok") {
+        apiUrlInput.value = url;
+        conn.textContent = "Connected ✓ (" + url + ")";
+        return;
+      }
+    } catch (e) { /* try the next one */ }
+  }
+  conn.textContent = "No API found ✗";
+}
+findApi();
+// This header skips ngrok's free-tier warning page, which would otherwise break fetch()
+const API_HEADERS = { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" };
+
+document.getElementById("testBtn").onclick = async () => {
+  const conn = document.getElementById("conn");
+  conn.textContent = "Testing...";
+  try {
+    const r = await fetch(apiBase() + "/health", { headers: API_HEADERS });
+    const d = await r.json();
+    conn.textContent = d.status === "ok" ? "Connected ✓" : "Unexpected response";
+  } catch (e) {
+    conn.textContent = "Cannot reach the API ✗";
+  }
+};
+
+// ---- Canvas ----
+function clearCanvas() {
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+clearCanvas();
+
+function pos(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * canvas.width / r.width,
+           y: (e.clientY - r.top) * canvas.height / r.height };
+}
+function drawLine(a, b) {
+  ctx.strokeStyle = tool === "pen" ? "#000" : "#fff";
+  ctx.lineWidth = parseInt(sizeInput.value) * (tool === "eraser" ? 3 : 1);
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+}
+canvas.addEventListener("pointerdown", e => {
+  drawing = true; last = pos(e);
+  canvas.setPointerCapture(e.pointerId);
+  drawLine(last, last);
+});
+canvas.addEventListener("pointermove", e => {
+  if (!drawing) return;
+  const p = pos(e); drawLine(last, p); last = p;
+});
+["pointerup", "pointercancel"].forEach(ev => canvas.addEventListener(ev, () => drawing = false));
+
+function setTool(t) {
+  tool = t;
+  document.getElementById("penBtn").classList.toggle("active", t === "pen");
+  document.getElementById("eraserBtn").classList.toggle("active", t === "eraser");
+}
+document.getElementById("penBtn").onclick = () => setTool("pen");
+document.getElementById("eraserBtn").onclick = () => setTool("eraser");
+document.getElementById("clearBtn").onclick = () => { clearCanvas(); useDetector.checked = false; };
+
+// Upload: place the image on the canvas (fit, white padding) so you can also draw on top
+document.getElementById("file").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    clearCanvas();
+    const s = Math.min(canvas.width / img.width, canvas.height / img.height);
+    const w = img.width * s, h = img.height * s;
+    ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    useDetector.checked = true;
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(f);
+  e.target.value = "";
+});
+
+[["control","csv"],["guidance","gsv"],["steps","stv"]].forEach(([i, o]) => {
+  const el = document.getElementById(i);
+  el.oninput = () => document.getElementById(o).textContent = el.value;
+});
+
+// ---- Generate ----
+document.getElementById("genBtn").onclick = async () => {
+  const btn = document.getElementById("genBtn");
+  const status = document.getElementById("status");
+  const base = apiBase();
+  if (!base) { status.textContent = "Paste the API URL at the top first."; return; }
+
+  btn.disabled = true; status.textContent = "Generating... (can take 20-60 s)";
+  try {
+    const res = await fetch(base + "/generate", {
+      method: "POST",
+      headers: API_HEADERS,
+      body: JSON.stringify({
+        image: canvas.toDataURL("image/png"),
+        use_detector: useDetector.checked,
+        prompt: document.getElementById("prompt").value,
+        negative_prompt: document.getElementById("negative").value,
+        control_strength: parseFloat(document.getElementById("control").value),
+        guidance_scale: parseFloat(document.getElementById("guidance").value),
+        num_steps: parseInt(document.getElementById("steps").value),
+        seed: parseInt(document.getElementById("seed").value)
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    document.getElementById("result").src = data.result;
+    document.getElementById("resultLabel").textContent = "Generated image (seed " + data.seed + ")";
+    document.getElementById("control_img").src = data.control;
+    document.getElementById("controlLabel").textContent = "Control image sent to ControlNet";
+    status.textContent = "Done.";
+  } catch (err) {
+    status.textContent = "Error: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
